@@ -112,4 +112,4 @@ run_app.bat                     源码启动入口
 
 ## 许可
 
-附带的配准核心保留其原有 [BSD-3-Clause 许可](general_model_registration/LICENSE)。第三方依赖许可见 `chairside_compare/packaging/third_party`。椅旁应用顶层尚未指定开源许可证。
+本项目采用 [BSD-3-Clause 许可](LICENSE)，版权所有 © 2026 Henry Van。附带配准核心同样采用 BSD-3-Clause；第三方依赖继续适用各自的许可证，见 `chairside_compare/packaging/third_party`。
