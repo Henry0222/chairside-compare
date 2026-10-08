@@ -1,6 +1,6 @@
 # Chairside Compare · 椅旁预备对比
 
-面向单牙固定修复预备复核的 Windows 桌面应用：将当前口扫与外部设计的目标预备模型配准，在三维叠加与截面视图中观察表面差异。
+面向单牙固定修复预备复核：将当前口扫与外部设计的目标预备模型配准，在三维叠加与截面视图中观察表面差异。
 
 **版本：0.6.0 · Windows x64 · Python 3.12 · 配准核心 3.0.0**
 
@@ -51,7 +51,7 @@
 
 ## 从源码运行
 
-仓库包含椅旁应用及配准核心，无需原开发电脑的目录。建议使用 Windows x64 和 Python 3.12。
+仓库包含椅旁应用及配准核心。建议使用 Windows x64 和 Python 3.12。
 
 在仓库根目录运行：
 
@@ -66,26 +66,6 @@ py -3.12 -m venv .venv
 
 主要依赖：PySide6、VTK、Open3D、NumPy、SciPy。具体版本约束见两个子项目的 `pyproject.toml`。
 
-## 测试与打包
-
-```powershell
-.venv\Scripts\python.exe -m pip install pytest pyinstaller
-.venv\Scripts\python.exe -m pytest chairside_compare/tests -q
-.venv\Scripts\python.exe chairside_compare/scripts/smoke_ui.py
-powershell -ExecutionPolicy Bypass -File chairside_compare/packaging/build.ps1
-```
-
-无参数的界面回归脚本生成合成测试几何，不需要患者数据。也可通过 `--case <病例目录>` 检查自己的病例副本。
-
-打包结果位于 `chairside_compare/release/ChairsideCompare`。可执行程序自检：
-
-```powershell
-chairside_compare/release/ChairsideCompare/ChairsideCompare.exe --package-check C:/Temp/ChairsideCheck
-```
-
-自检生成合成几何和 `result.json`；需检查其中的结果，而非只看进程退出码。
-
-当前版本已通过 13 项核心测试、真实病例副本交互回归、冻结 EXE 的渲染/测量/配准链路检查及 ZIP 完整性校验。未在另一台物理电脑验证；这些测试不构成临床精度证明。
 
 ## 数据与目录
 
@@ -112,4 +92,4 @@ run_app.bat                     源码启动入口
 
 ## 许可
 
-附带的配准核心保留其原有 [BSD-3-Clause 许可](general_model_registration/LICENSE)。第三方依赖许可见 `chairside_compare/packaging/third_party`。椅旁应用顶层尚未指定开源许可证。
+附带的配准核心保留其原有 [BSD-3-Clause 许可](general_model_registration/LICENSE)。第三方依赖许可见 `chairside_compare/packaging/third_party`。
