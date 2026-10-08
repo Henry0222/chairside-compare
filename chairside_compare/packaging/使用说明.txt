@@ -1,0 +1,24 @@
+Chairside Compare 0.6.0 — Windows x64 portable edition
+
+使用方法
+1. 将整个 ChairsideCompare 文件夹复制到另一台 Windows 10/11 64 位电脑。
+2. 双击 ChairsideCompare.exe。无需安装 Python，也不需要联网下载运行库。
+3. 必须保留同目录的 _internal 文件夹，不能只复制 EXE。
+4. 首次打开后拖入目标模型、当前扫描，或点击“导入模型”。模型单位为毫米。
+
+数据位置
+病例、设置保存到 %LOCALAPPDATA%\ChairsideCompare（当前 Windows 用户）。
+程序文件夹可以移动；用户数据不会因移动程序而丢失。
+打开既有病例时选择包含 geometry.npz 的病例文件夹内的 case.json。
+包内不含患者数据。卸载时删除程序文件夹即可；病例数据需单独备份/管理。
+
+兼容性
+本版本面向 Windows x64，包含 Python 3.12、Qt、VTK、Open3D 和配准算法。
+显卡驱动和远程桌面环境会影响三维渲染；请在目标电脑验证导入、配准与显示。
+未作代码签名，Windows 可能显示未知发布者提示。
+不能把本机打包测试等同于目标电脑或临床精度验证。
+
+界面
+参考 Apple Human Interface Guidelines 的层级、布局与颜色原则，使用 Windows 字体。
+https://developer.apple.com/design/human-interface-guidelines/
+这是独立 Windows 应用，不是 Apple 产品，也未使用 Apple 专属字体。

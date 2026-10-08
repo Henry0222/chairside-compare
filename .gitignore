@@ -1,0 +1,32 @@
+# Local environments and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+release/
+*.exe
+*.dll
+*.zip
+*.log
+# Patient data and local preferences
+cases/
+.user/
+verification/
+preview/
+demo/
+*.stl
+*.ply
+*.obj
+*.npz
+*.npy
+*.dcm
+# Credentials and local configuration
+.env
+.env.*
+*.pem
+*.key
+.loci/
