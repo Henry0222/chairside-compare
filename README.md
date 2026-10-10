@@ -4,15 +4,6 @@
 
 **版本：0.7.4 · Windows x64 · Python 3.12 · 配准核心 3.0.0**
 
-## 快速开始：免安装版
-
-从 [Releases](https://github.com/Henry0222/chairside-compare/releases) 下载 Windows x64 Portable ZIP，完整解压后双击 `ChairsideCompare.exe`。
-
-- 无需单独安装 Python，不需要在线下载运行依赖。
-- 必须保留同目录的 `_internal` 文件夹，不能只复制 EXE。
-- 面向 Windows 10/11 64 位；目标电脑的显卡驱动与三维显示兼容性仍需现场验证。
-- 安装包已取消，本项目提供免安装文件夹。
-
 ## 主要功能
 
 - **多模型工作流**：支持两个或多个模型，按导入顺序追加，可在导入窗口移除。配准时各模型独立对齐所选参考；参考不变且文件哈希匹配时复用已有配准。
@@ -27,8 +18,6 @@
 - **截面测量**：距离测量及有向角度测量；支持重复点选修正截面中心。
 - **病例保存**：记录配准矩阵、诊断、显示参数、测量与视角；每轮扫描独立保存。
 - **配准诊断**：可读摘要展示状态、重叠率、表面残差、耗时和方案选择原因，亦可切换原始诊断。
-
-界面参考 [Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/) 的布局与视觉层级，采用 Windows 字体与浅色控件。
 
 ## 使用流程
 
