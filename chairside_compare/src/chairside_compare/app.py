@@ -11,9 +11,9 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QObject, QEvent
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QScrollArea, QDoubleSpinBox, QComboBox, QCheckBox,
-    QSlider, QFileDialog, QMessageBox, QDialog, QLineEdit, QProgressBar, QFormLayout, QAbstractSpinBox, QListWidget, QPlainTextEdit)
+    QSlider, QFileDialog, QMessageBox, QDialog, QLineEdit, QProgressBar, QFormLayout, QAbstractSpinBox, QListWidget, QPlainTextEdit, QButtonGroup)
 
-from .core import DisplaySettings, run_case, load_case, atomic_json, load_preview, normalize_paths
+from .core import DisplaySettings, run_case, load_case, atomic_json, load_preview, normalize_paths, pair_arrays, snapshot_paths
 from .viewer import CompareViewer
 
 ROOT = (Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'ChairsideCompare'
@@ -108,6 +108,8 @@ class PreviewJob(QThread):
 
     def run(self):
         try:
+            self.progress.emit(0,'保存本轮导入副本…')
+            self.paths = snapshot_paths(self.paths,ROOT/'imports')
             arrays = load_preview(self.paths,self.progress.emit)
             if not self.isInterruptionRequested():
                 self.completed.emit((self.paths,arrays))
@@ -120,47 +122,66 @@ class Job(QThread):
     completed = Signal(object)
     error = Signal(str)
 
-    def __init__(self, paths, previous, parent=None):
+    def __init__(self, paths, previous, parent=None, reference=None, comparison=None):
         super().__init__(parent)
         self.paths, self.previous = paths, previous
+        self.reference, self.comparison = reference, comparison
 
     def run(self):
         try:
-            result = run_case(self.paths, ROOT/'cases', self.progress.emit, self.isInterruptionRequested, self.previous)
+            result = run_case(self.paths, ROOT/'cases', self.progress.emit, self.isInterruptionRequested,
+                              self.previous, self.reference, self.comparison)
             self.completed.emit(result)
         except Exception as error:
             self.error.emit(f'{type(error).__name__}: {error}')
             traceback.print_exc()
 
 
+class PairJob(QThread):
+    completed = Signal(object)
+    error = Signal(str)
+
+    def __init__(self,arrays,pair,failed,parent=None):
+        super().__init__(parent)
+        self.arrays,self.pair,self.failed = arrays,pair,failed
+
+    def run(self):
+        try:
+            data = pair_arrays(self.arrays,*self.pair,calculate=True,failed=self.failed)
+            if self.isInterruptionRequested():
+                self.error.emit('已取消切换')
+            else:
+                self.completed.emit((self.pair,data))
+        except Exception as error:
+            self.error.emit(str(error))
+
+
 class InputDialog(QDialog):
     def __init__(self, paths, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('导入模型 · 两组或三组')
+        self.setWindowTitle('模型列表 · 按导入顺序排列')
         self.setAcceptDrops(True)
-        self.resize(740, 320)
+        self.resize(800, 480)
         layout = QVBoxLayout(self)
         title = QLabel('建立同一病例的比较流程')
         title.setObjectName('heading')
         layout.addWidget(title)
-        note = QLabel('从文件夹拖入对应输入框，或拖入窗口依次填充。单位：毫米；支持 STL / PLY。\n仅目标＋当前即可配准；初诊可选。导入后先显示原始位置，点击开始再配准。')
+        note = QLabel('可连续追加多个 STL / PLY，也可从文件夹拖入。单位：毫米。\n导入后先预览，再选择参考与比较模型；配准时所有模型独立对齐参考。')
         note.setObjectName('muted')
         layout.addWidget(note)
         self.edits = {}
-        for key, title in [('target','01  目标模型（必填）'),('current','02  当前模型（必填）'),('initial','03  初诊模型（可选）')]:
-            row = QHBoxLayout()
-            label = QLabel(title)
-            label.setFixedWidth(145)
-            row.addWidget(label)
-            edit = ModelPathEdit(paths.get(key,''))
-            edit.setPlaceholderText('拖入 STL / PLY 文件…' if key!='initial' else '可留空；两模型时以目标为固定参考')
-            edit.setClearButtonEnabled(True)
-            row.addWidget(edit,1)
-            button = QPushButton('浏览')
-            button.clicked.connect(lambda checked=False,e=edit: self.browse(e))
-            row.addWidget(button)
-            self.edits[key] = edit
-            layout.addLayout(row)
+        self.rows = QVBoxLayout()
+        holder = QWidget()
+        holder.setLayout(self.rows)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(holder)
+        layout.addWidget(scroll,1)
+        for key,path in paths.items():
+            self.add_row(path,key)
+        add = QPushButton('添加模型…')
+        add.clicked.connect(self.add_files)
+        layout.addWidget(add)
         buttons = QHBoxLayout()
         buttons.addStretch()
         cancel = QPushButton('取消')
@@ -172,6 +193,31 @@ class InputDialog(QDialog):
         buttons.addWidget(accept)
         layout.addLayout(buttons)
 
+    def add_row(self,path,key=None):
+        key = key or new_model_key(self.edits)
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        edit = ModelPathEdit(path)
+        edit.setPlaceholderText('拖入 STL / PLY 文件…')
+        row.addWidget(edit,1)
+        browse = QPushButton('浏览')
+        browse.clicked.connect(lambda:self.browse(edit))
+        row.addWidget(browse)
+        remove = QPushButton('移除')
+        remove.clicked.connect(lambda:self.remove_row(key,holder))
+        row.addWidget(remove)
+        self.rows.addWidget(holder)
+        self.edits[key] = edit
+
+    def remove_row(self,key,holder):
+        self.edits.pop(key,None)
+        holder.deleteLater()
+
+    def add_files(self):
+        files,_ = QFileDialog.getOpenFileNames(self,'添加模型','','模型 (*.stl *.ply)')
+        for path in files:
+            self.add_row(path)
+
     def browse(self, edit):
         path,_ = QFileDialog.getOpenFileName(self,'选择全牙列模型',edit.text(),'模型 (*.stl *.ply)')
         if path:
@@ -179,8 +225,8 @@ class InputDialog(QDialog):
 
     def validate(self):
         paths = self.paths()
-        if not all(k in paths for k in ('target','current')) or any(not Path(p).is_file() or Path(p).suffix.lower() not in ('.stl','.ply') for p in paths.values()):
-            QMessageBox.warning(self,'模型不完整','请导入目标和当前模型；初诊可留空。所有已填项需为存在的 STL / PLY 文件。')
+        if not paths or any(not Path(p).is_file() or Path(p).suffix.lower() not in ('.stl','.ply') for p in paths.values()):
+            QMessageBox.warning(self,'模型不完整','请添加至少一个存在的 STL / PLY 文件；配准需要两个模型。')
             return
         self.accept()
 
@@ -192,22 +238,29 @@ class InputDialog(QDialog):
             event.acceptProposedAction()
 
     def dropEvent(self,event):
-        files = iter(ModelPathEdit.files(event.mimeData()))
-        for key in ('target','current','initial'):
-            if not self.edits[key].text():
-                path = next(files,None)
-                if path:
-                    self.edits[key].setText(path)
+        for path in ModelPathEdit.files(event.mimeData()):
+            self.add_row(path)
         event.acceptProposedAction()
 
     def dragMoveEvent(self,event):
         self.dragEnterEvent(event)
 
 
+def new_model_key(paths):
+    if not paths:
+        return 'target'
+    if 'current' not in paths and 'target' in paths:
+        return 'current'
+    index = 1
+    while f'model_{index}' in paths:
+        index += 1
+    return f'model_{index}'
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Chairside Compare · 椅旁预备对比 0.6')
+        self.setWindowTitle('Chairside Compare · 多模型对比 0.7.4')
         self.wheel_blocker = ParameterWheelBlocker(self)
         QApplication.instance().installEventFilter(self.wheel_blocker)
         self.resize(1540,960)
@@ -220,6 +273,7 @@ class MainWindow(QMainWindow):
                 pass
         self.paths, self.state, self.case_path, self.job = {}, None, None, None
         self.registration_cache = None
+        self.pair_cache = {}
         self.loading = False
         self.watch_folder, self.watch_seen = None, {}
         root = QWidget()
@@ -242,7 +296,7 @@ class MainWindow(QMainWindow):
         for button in [self.open_button,self.import_button,self.save_button]:
             header.addWidget(button)
         outer.addLayout(header)
-        self.banner = QLabel('准备就绪  ·  导入目标与当前模型，初诊模型可选')
+        self.banner = QLabel('准备就绪  ·  导入两个或多个模型，选择参考与比较模型')
         self.banner.setStyleSheet('background:#e4f2f0;color:#246b65;padding:10px;border-radius:6px;')
         outer.addWidget(self.banner)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -285,30 +339,28 @@ class MainWindow(QMainWindow):
         panel_layout.addLayout(probe_form)
         self.clear_probe_button = self.button('清除偏差测量',lambda:self.viewer.clear_measurements('probes'))
         panel_layout.addWidget(self.clear_probe_button)
-        panel_layout.addWidget(self.button('打开通用配准 3D 查看器',self.general_viewer))
-        hint = QLabel('自动定位仅提示变化区域，\n不是牙齿分割或自动编号。')
-        hint.setObjectName('muted')
-        panel_layout.addWidget(hint)
-        self.radius = self.spin(2,20,.5,self.settings.radius)
-        form = QFormLayout()
-        form.addRow('截面范围 mm',self.radius)
-        panel_layout.addLayout(form)
-        panel_layout.addWidget(self.button('聚焦治疗区域',self.viewer.focus))
+        self.draw_button = self.button('拖线创建剖面',self.draw_section_mode)
+        self.draw_button.setCheckable(True)
+        self.draw_button.setToolTip('左键拖出直线，沿当前观察方向构建剖面；Esc 取消。')
+        panel_layout.addWidget(self.draw_button)
+        panel_layout.addWidget(self.button('按当前 3D 视角设截面',self.viewer.section_from_camera))
+        self.clear_section_button = self.button('清除当前剖面',self.clear_custom_section)
+        self.clear_section_button.setEnabled(False)
+        panel_layout.addWidget(self.clear_section_button)
+        self.viewer.drawing_changed.connect(self.draw_button.setChecked)
+        self.viewer.custom_section_changed.connect(self.clear_section_button.setEnabled)
         self.section_label(panel_layout,'模型与偏差')
         self.opacity = {}
-        for key,title in [('current','当前牙体'),('target','目标预备体'),('initial','初诊牙列')]:
-            line = QHBoxLayout()
-            label = QLabel(title)
-            label.setMinimumHeight(24)
-            line.addWidget(label)
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(0,100)
-            slider.setValue(round(getattr(self.settings,key+'_opacity')*100))
-            slider.setToolTip('0% 隐藏，100% 不透明')
-            slider.valueChanged.connect(self.settings_changed)
-            line.addWidget(slider)
-            panel_layout.addLayout(line)
-            self.opacity[key] = slider
+        self.reference_combo,self.comparison_combo = QComboBox(),QComboBox()
+        pair_form = QFormLayout()
+        pair_form.addRow('参考模型',self.reference_combo)
+        pair_form.addRow('比较模型',self.comparison_combo)
+        panel_layout.addLayout(pair_form)
+        self.reference_combo.currentIndexChanged.connect(self.pair_changed)
+        self.comparison_combo.currentIndexChanged.connect(self.pair_changed)
+        hint = QLabel('彩虹图显示在参考模型上。\n各模型不透明度在 3D 视图右上角调整。')
+        hint.setObjectName('muted')
+        panel_layout.addWidget(hint)
         self.color = QCheckBox('显示全牙列彩虹图')
         self.color.setChecked(True)
         self.color.toggled.connect(self.settings_changed)
@@ -339,21 +391,24 @@ class MainWindow(QMainWindow):
         line.addWidget(slider)
         panel_layout.addLayout(line)
         self.opacity['section'] = slider
-        panel_layout.addWidget(self.button('按当前 3D 视角设截面',self.viewer.section_from_camera))
-        panel_layout.addWidget(self.button('交换大小画面',self.viewer.swap))
-        self.step = self.spin(.01,2,.05,self.settings.step)
-        form = QFormLayout()
-        form.addRow('滚轮步长 mm',self.step)
-        panel_layout.addLayout(form)
-        instruction = QLabel('左拖旋转截面，中拖平移\n滚轮移截面，Ctrl+滚轮缩放\n双击小画面：交换视图')
+        instruction = QLabel('3D 剖面：Alt＋左拖移动；拖边缩放，拖角绕法向旋转\n截面窗：左拖旋转，中拖平移\n滚轮移截面 0.05 mm，Ctrl+滚轮缩放；双击交换')
+        instruction.setWordWrap(True)
         instruction.setObjectName('muted')
         panel_layout.addWidget(instruction)
-        self.measure_mode = QComboBox()
-        self.measure_mode.addItem('截面浏览','none')
-        self.measure_mode.addItem('距离测量','distance')
-        self.measure_mode.addItem('角度测量','angle')
-        self.measure_mode.currentIndexChanged.connect(lambda _:self.viewer.set_measure_mode(self.measure_mode.currentData()))
-        panel_layout.addWidget(self.measure_mode)
+        self.measure_buttons = {}
+        self.measure_group = QButtonGroup(self)
+        measure_row = QHBoxLayout()
+        measure_row.setSpacing(3)
+        for title,mode in [('截面浏览','none'),('距离测量','distance'),('角度测量','angle')]:
+            button = QPushButton(title)
+            button.setCheckable(True)
+            button.setStyleSheet('QPushButton {padding:7px 3px;font-size:12px;}')
+            button.clicked.connect(lambda checked=False,m=mode:self.viewer.set_measure_mode(m))
+            self.measure_group.addButton(button)
+            self.measure_buttons[mode] = button
+            measure_row.addWidget(button,1)
+        self.measure_buttons['none'].setChecked(True)
+        panel_layout.addLayout(measure_row)
         measurement_hint = QLabel('点击截线吸附取点。\n角度：1→2 为参考，3→4 为待测方向。\n两线均按颈部→咬合面顺序取点。\n从参考转到待测：逆时针为正，顺时针为负。\n正负表示转向，不自动判定倒凹。\n改变截面清除未完成取点。')
         measurement_hint.setWordWrap(True)
         measurement_hint.setObjectName('muted')
@@ -380,10 +435,16 @@ class MainWindow(QMainWindow):
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(5)
         outer.addWidget(self.progress)
-        self.status = QLabel('就绪  ·  第一版功能预览  ·  自动定位后请检查牙位和对齐情况')
+        self.status = QLabel('就绪  ·  支持多模型比较与拖线剖面')
         self.status.setObjectName('muted')
         self.status.setWordWrap(True)
-        outer.addWidget(self.status)
+        footer = QHBoxLayout()
+        footer.addWidget(self.status,1)
+        self.github_link = QLabel('<a href="https://github.com/Henry0222/chairside-compare" style="color:#0071e3;text-decoration:none;">Henry Van · GitHub ↗</a>')
+        self.github_link.setOpenExternalLinks(True)
+        self.github_link.setToolTip('打开 Chairside Compare GitHub 仓库')
+        footer.addWidget(self.github_link,0,Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        outer.addLayout(footer)
         self.setCentralWidget(root)
         self.sync_controls()
         self.watch_timer = QTimer(self)
@@ -415,8 +476,9 @@ class MainWindow(QMainWindow):
         return widget
 
     def sync_controls(self):
+        self.settings.step = .05  # Also migrate old case/preferences wheel steps.
         self.loading = True
-        for name in ('lower','upper','tolerance','radius','step'):
+        for name in ('lower','upper','tolerance'):
             getattr(self,name).setValue(getattr(self.settings,name))
         for key,slider in self.opacity.items():
             slider.setValue(round(getattr(self.settings,key+'_opacity')*100))
@@ -425,9 +487,10 @@ class MainWindow(QMainWindow):
         self.loading = False
 
     def settings_changed(self,*args):
-        if self.loading or not hasattr(self,'step'):
+        if self.loading or not hasattr(self,'measure_buttons'):
             return
-        values = {name:getattr(self,name).value() for name in ('lower','upper','tolerance','radius','step')}
+        values = asdict(self.settings)
+        values.update({name:getattr(self,name).value() for name in ('lower','upper','tolerance')})
         values.update({key+'_opacity':slider.value()/100 for key,slider in self.opacity.items()})
         values.update(tooth=self.settings.tooth,reverse=self.reverse.isChecked(),color=self.color.isChecked())
         try:
@@ -450,23 +513,21 @@ class MainWindow(QMainWindow):
             valid = self.viewer.target_valid
             total = len(valid)
             good = int(valid.sum())
-            self.coverage.setText(f'灰色：不可评价区域\n目标牙列有效顶点：{good} / {total}')
+            self.coverage.setText(f'灰色：不可评价区域\n参考模型有效顶点：{good} / {total}')
 
     def drop_models(self,files):
         if self.job is not None and self.job.isRunning():
             self.status.setText('正在处理模型，请等待完成后再拖入。')
             return
-        if len(files)>3:
-            self.status.setText('一次最多拖入三个模型：目标、当前、可选初诊。')
+        if not files:
             return
-        if len(files)>=2:
-            self.paths = dict(zip(('target','current','initial'),files))
-        elif files:
-            role = 'target' if 'target' not in self.paths else 'current'
-            self.paths[role] = files[0]
-        else:
-            return
+        self.save_case(quiet=True)
+        for path in files:
+            self.paths[new_model_key(self.paths)] = path
         self.summary()
+        self.comparison_combo.blockSignals(True)
+        self.comparison_combo.setCurrentIndex(len(self.paths)-1)
+        self.comparison_combo.blockSignals(False)
         self.preview_models()
 
     def import_models(self):
@@ -494,48 +555,150 @@ class MainWindow(QMainWindow):
     def receive_preview(self,result):
         paths,arrays = result
         self.paths = paths
+        self.summary()
         for key in paths:
-            if getattr(self.settings,key+'_opacity')==0:
+            if getattr(self.settings,key+'_opacity',.4)==0:
                 setattr(self.settings,key+'_opacity',.4)
         self.sync_controls()
-        self.viewer.load(arrays,self.settings,preview=True)
-        self.banner.setText('原始模型预览 · 尚未配准 · '+('继续拖入当前模型' if 'current' not in paths else '点击开始自动配准'))
-        self.status.setText('拖入规则：首次单文件为目标，随后单文件为当前；同时拖入按目标、当前、初诊排列。可在导入窗口调整。')
+        pair = self.selected_pair()
+        import numpy as np
+        arrays['values'] = np.zeros(len(arrays.get((pair[1] if pair else 'current')+'_vertices',[])))
+        arrays['valid'] = np.zeros(len(arrays['values']),bool)
+        self.viewer.load(arrays,self.settings,preview=True,paths=paths,pair=pair)
+        self.pair_cache.clear()
+        self.banner.setText('原始模型预览 · 尚未配准 · '+('继续拖入模型' if len(paths)<2 else '点击开始自动配准'))
+        self.status.setText('模型按导入顺序追加；可在导入窗口移除。配准时所有模型分别对齐所选参考模型。')
         self.refresh_records()
         self.probe_button.setChecked(False)
         self.viewer.measure_enabled = False
         self.progress.setValue(0)
 
     def summary(self):
-        self.file_summary.setText('\n'.join(f'{label}：{Path(self.paths[key]).name}' for key,label in
-            [('initial','初诊'),('target','目标'),('current','当前')] if key in self.paths))
+        self.file_summary.setText('\n'.join(f'{i} · {Path(path).name}' for i,path in enumerate(self.paths.values(),1)))
+        for combo,default in [(self.reference_combo,0),(self.comparison_combo,max(0,len(self.paths)-1))]:
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            for i,(key,path) in enumerate(self.paths.items(),1):
+                combo.addItem(f'{i} · {Path(path).name}',key)
+                combo.setItemData(combo.count()-1,path,Qt.ItemDataRole.ToolTipRole)
+            index = combo.findData(selected)
+            combo.setCurrentIndex(index if index>=0 else default)
+            combo.blockSignals(False)
+        if len(self.paths)>1 and self.reference_combo.currentData()==self.comparison_combo.currentData():
+            reference = self.reference_combo.currentData()
+            self.select_pair_controls((reference,next(k for k in self.paths if k!=reference)))
+
+    def selected_pair(self):
+        pair = (self.reference_combo.currentData(),self.comparison_combo.currentData())
+        return pair if None not in pair and pair[0]!=pair[1] else None
+
+    def select_pair_controls(self,pair):
+        for combo,key in zip((self.reference_combo,self.comparison_combo),pair):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(key))
+            combo.blockSignals(False)
+
+    def pair_changed(self,*args):
+        if self.loading or self.viewer.arrays is None:
+            return
+        pair = self.selected_pair()
+        if pair is None:
+            # Keep two distinct models selected when the reference changes.
+            keys = list(self.paths)
+            if len(keys)<2:
+                return
+            reference = self.reference_combo.currentData()
+            pair = (reference,next(k for k in keys if k!=reference))
+            self.select_pair_controls(pair)
+        if self.viewer.preview:
+            import numpy as np
+            arrays = dict(self.viewer.arrays)
+            arrays['values'] = np.zeros(len(arrays[pair[1]+'_vertices']))
+            arrays['valid'] = np.zeros(len(arrays['values']),bool)
+            view = self.viewer.view_state()
+            self.viewer.load(arrays,self.settings,preview=True,paths=self.paths,pair=pair)
+            self.viewer.restore_view(view)
+            return
+        if not self.state or pair == tuple(self.state.get('pair',('target','current'))):
+            return
+        if self.job and self.job.isRunning():
+            return
+        if pair in self.pair_cache:
+            self.receive_pair((pair,self.pair_cache[pair]))
+            return
+        self.set_busy(True)
+        self.status.setText('正在计算所选模型之间的偏差…')
+        self.job = PairJob(self.viewer.arrays,pair,self.state.get('failed',False),self)
+        self.job.completed.connect(self.receive_pair)
+        self.job.error.connect(self.pair_error)
+        self.job.finished.connect(lambda:self.set_busy(False))
+        self.job.start()
+
+    def pair_error(self,message):
+        self.select_pair_controls(self.state.get('pair',('target','current')))
+        self.status.setText('切换比较失败，保留原比较：'+message)
+
+    def receive_pair(self,result):
+        pair,data = result
+        self.pair_cache[pair] = {'values':data['values'],'valid':data['valid']}
+        arrays = dict(self.viewer.arrays)
+        arrays.update(values=data['values'],valid=data['valid'])
+        view = self.viewer.view_state()
+        view['probes'],view['measurements'] = [],[]
+        self.state['pair'] = list(pair)
+        self.viewer.load(arrays,self.settings,paths=self.paths,pair=pair)
+        self.viewer.restore_view(view)
+        self.update_coverage()
+        self.refresh_records()
+        self.save_case(quiet=True)
+        self.status.setText('已切换比较；旧模型对的测量已清除。彩虹图显示在所选参考模型上。')
+
+    def draw_section_mode(self):
+        if self.viewer.arrays is None:
+            self.draw_button.setChecked(False)
+            self.status.setText('请先导入模型。')
+            return
+        self.pick_button.setChecked(False)
+        self.probe_button.setChecked(False)
+        self.viewer.set_draw_mode(self.draw_button.isChecked())
+        if self.draw_button.isChecked():
+            self.status.setText('在 3D 视图左键拖线创建剖面；松开生成，Esc 取消。')
+
+    def clear_custom_section(self):
+        self.viewer.clear_custom_section()
+        self.measure_buttons['none'].setChecked(True)
 
     def next_scan(self):
-        if 'target' not in self.paths:
+        if not self.paths:
             self.import_models()
             return
         path,_ = QFileDialog.getOpenFileName(self,'选择新一轮椅旁扫描','','模型 (*.stl *.ply)')
         if path:
-            self.paths['current'] = path
-            self.summary()
-            self.start()
+            self.drop_models([path])
 
     def set_busy(self,busy):
         for button in [self.run_button,self.import_button,self.open_button,self.next_button,self.watch_button]:
             button.setEnabled(not busy)
         self.cancel_button.setVisible(busy)
+        self.reference_combo.setEnabled(not busy)
+        self.comparison_combo.setEnabled(not busy)
 
     def start(self):
         if self.job is not None and self.job.isRunning():
             return
-        if not all(k in self.paths for k in ('target','current')):
+        if len(self.paths)<2:
             self.import_models()
+            return
+        pair = self.selected_pair()
+        if pair is None:
+            self.status.setText('请选择两个不同模型。')
             return
         self.save_case(quiet=True)
         self.set_busy(True)
         self.banner.setText('正在配准新扫描 · 下方旧画面仅供查看，尚未更新')
         self.progress.setValue(0)
-        self.job = Job(dict(self.paths),self.state or self.registration_cache,self)
+        self.job = Job(dict(self.paths),self.state or self.registration_cache,self,reference=pair[0],comparison=pair[1])
         self.job.progress.connect(self.progress_update)
         self.job.completed.connect(self.receive)
         self.job.error.connect(self.error)
@@ -568,12 +731,17 @@ class MainWindow(QMainWindow):
         self.state,self.case_path = state,Path(path)
         self.paths = dict(state['paths'])
         self.summary()
+        pair = tuple(state.get('pair',('target','current')))
+        self.state.setdefault('geometry_pair',list(pair))
+        self.state['pair'] = list(pair)
+        self.select_pair_controls(pair)
+        self.pair_cache = {pair:{'values':arrays['values'],'valid':arrays['valid']}}
         if 'display' in state:
             self.settings = DisplaySettings.from_dict(state['display'])
         region = state.get('region_suggestion')
         self.sync_controls()
         center = region['center'] if region else None
-        self.viewer.load(arrays,self.settings,center)
+        self.viewer.load(arrays,self.settings,center,paths=self.paths,pair=pair)
         if state.get('view') or previous_view:
             self.viewer.restore_view(state.get('view') or previous_view)
         elif center is not None:
@@ -595,6 +763,7 @@ class MainWindow(QMainWindow):
         self.save_case(quiet=True)
 
     def pick_mode(self):
+        self.viewer.set_draw_mode(False)
         self.probe_button.setChecked(False)
         self.viewer.measure_enabled = False
         self.viewer.main.pick_mode = self.pick_button.isChecked()
@@ -602,6 +771,7 @@ class MainWindow(QMainWindow):
             self.status.setText('可连续点击修正截面中心；再次点击定位按钮结束定位，拖动仍可旋转。')
 
     def probe_mode(self):
+        self.viewer.set_draw_mode(False)
         if self.viewer.arrays is None or self.viewer.preview or not self.viewer.arrays['valid'].any():
             self.probe_button.setChecked(False)
             self.status.setText('请先完成配准，再开启偏差测量。')
@@ -609,7 +779,7 @@ class MainWindow(QMainWindow):
         self.pick_button.setChecked(False)
         self.viewer.main.pick_mode = False
         self.viewer.measure_enabled = self.probe_button.isChecked()
-        self.status.setText('短按当前模型标注平均偏差；拖动仍可旋转模型。')
+        self.status.setText('短按所选比较模型标注平均偏差；拖动仍可旋转模型。')
 
     def refresh_records(self):
         if not hasattr(self,'records'):
@@ -623,21 +793,6 @@ class MainWindow(QMainWindow):
         index = self.records.row(item)
         if index>=0:
             self.viewer.restore_measurement(index)
-
-    def general_viewer(self):
-        if not self.case_path or not self.state or self.state.get('failed'):
-            self.status.setText('请先打开已完成配准的病例。')
-            return
-        self.save_case(quiet=True)
-        import subprocess
-        try:
-            with open(self.case_path.with_name('general_viewer.log'),'a',encoding='utf-8') as log:
-                subprocess.Popen(([sys.executable,'--general-viewer',str(self.case_path)] if getattr(sys,'frozen',False)
-                                  else [sys.executable,str(ROOT/'scripts'/'general_review.py'),str(self.case_path)]),
-                             stdout=log,stderr=log,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            self.status.setText('正在打开通用 3D 查看器，已开启点击偏差标注。')
-        except OSError as error:
-            self.status.setText(f'无法打开通用查看器：{error}')
 
     def region_changed(self,center):
         self.update_coverage()
@@ -719,10 +874,8 @@ class MainWindow(QMainWindow):
                 self.watch_seen[path] = (signature,count+1,notified)
                 if not notified and count>=2 and stat.st_size>0:
                     self.watch_seen[path] = (signature,count+1,True)
-                    if QMessageBox.question(self,'发现新扫描',f'{path.name}\n作为当前病例的新扫描导入并配准？') == QMessageBox.StandardButton.Yes:
-                        self.paths['current'] = str(path)
-                        self.summary()
-                        self.start()
+                    if QMessageBox.question(self,'发现新扫描',f'{path.name}\n追加到当前病例并预览？确认模型后可点击开始配准。') == QMessageBox.StandardButton.Yes:
+                        self.drop_models([str(path)])
                         break
         except OSError as error:
             self.status.setText(f'目录暂不可读取：{error}')

@@ -39,6 +39,9 @@ def capture(window,path):
         painter.drawPixmap(origin,pane.grab())
         origin = pane.vtk.mapTo(window,QPoint(0,0))
         painter.drawImage(origin,qimage)
+        if pane is window.viewer.main and window.viewer.opacity_panel.isVisible():
+            panel = window.viewer.opacity_panel
+            painter.drawPixmap(panel.mapTo(window,QPoint(0,0)),panel.grab())
     painter.end()
     canvas.save(str(path))
 
@@ -130,8 +133,8 @@ np.testing.assert_allclose(focal,window.viewer.section.renderer.GetActiveCamera(
 
 # Wheel over controls continues scrolling without changing their values.
 assert not hasattr(window,'tooth') and not hasattr(window,'probe_records')
-scrollbar = window.findChild(QScrollArea).verticalScrollBar()
-for control in (window.lower,window.upper,window.tolerance,window.opacity['current'],window.measure_mode):
+scrollbar = window.panel.parentWidget().parentWidget().verticalScrollBar()
+for control in (window.lower,window.upper,window.tolerance,window.opacity['section']):
     scrollbar.setValue(scrollbar.maximum())
     before_scroll = scrollbar.value()
     value = control.value() if hasattr(control,'value') else control.currentIndex()
@@ -206,6 +209,7 @@ assert len(window.viewer.probes)>0
 # File manager drag/drop into each role, then validate a two-file import.
 dialog = InputDialog({},window)
 for key in ('target','current'):
+    dialog.add_row('',key)
     edit = dialog.edits[key]
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(state['paths'][key])])
@@ -242,7 +246,9 @@ for key in ('target','current'):
         QTest.qWait(30)
     app.processEvents()
     assert not window.job.isRunning()
-    assert Path(window.paths[key]).resolve()==Path(state['paths'][key]).resolve()
+    from chairside_compare.core import file_hash
+    assert Path(window.paths[key]).name==Path(state['paths'][key]).name
+    assert file_hash(window.paths[key])==file_hash(state['paths'][key])
     assert set(window.viewer.actors)==({'target'} if key=='target' else {'target','current'})
     assert window.viewer.preview
 window.close()

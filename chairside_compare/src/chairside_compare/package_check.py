@@ -12,7 +12,6 @@ def main(folder):
         from .core import DisplaySettings,comparison_values,run_case
         from .app import MainWindow,STYLE
         from . import app as app_module
-        from .general_review import viewer_data
         app=QApplication([]);app.setStyle('Fusion');app.setStyleSheet(STYLE)
         app_module.ROOT=output;app_module.PREFS=output/'preferences.json'
         target=o3d.geometry.TriangleMesh.create_sphere(radius=4,resolution=16)

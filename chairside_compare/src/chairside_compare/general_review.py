@@ -1,6 +1,6 @@
 from pathlib import Path
 import sys
-from chairside_compare.core import load_case, unpack_mesh, DisplaySettings
+from chairside_compare.core import load_case, unpack_mesh, DisplaySettings, pair_arrays
 from auto_alignment.result_viewer import ViewerData,GeneralResultViewer,configure_open3d_font
 from auto_alignment.deviation_scale import DeviationScale
 from open3d.visualization import gui
@@ -11,13 +11,15 @@ def viewer_data(path):
     if state['failed']:
         raise ValueError('配准失败的病例不能启动偏差测量')
     settings = DisplaySettings.from_dict(state.get('display',{}))
+    reference,comparison = state.get('pair',('target','current'))
+    arrays = pair_arrays(arrays,reference,comparison)
     meshes = {k:unpack_mesh({'vertices':arrays[k+'_vertices'],'triangles':arrays[k+'_triangles']}) for k in ('target','current')}
     values = arrays['values']*(-1 if settings.reverse else 1)
     scale = DeviationScale(settings.lower,-settings.tolerance,settings.tolerance,settings.upper,-settings.tolerance,settings.tolerance)
     return ViewerData(path,meshes['target'],meshes['current'],values,scale,settings.reverse,
-        registration_status=state['registrations']['current']['status'],
-        registration_warnings=tuple(state['registrations']['current'].get('warnings',[])),
-        annotation_file=path.with_name('general_viewer_annotations.json'))
+        registration_status=state['registrations'].get(comparison,{}).get('status','success'),
+        registration_warnings=tuple(state['registrations'].get(comparison,{}).get('warnings',[])),
+        annotation_file=path.with_name(f'general_viewer_annotations_{reference}_{comparison}.json'))
 
 
 def main(path):

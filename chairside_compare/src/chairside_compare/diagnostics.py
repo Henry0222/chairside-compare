@@ -1,5 +1,6 @@
 """Readable summaries of recorded registration evidence (no inferred scores)."""
 import math
+from pathlib import Path
 
 
 def diagnostic_summary(state):
@@ -8,6 +9,7 @@ def diagnostic_summary(state):
             return '未记录'
         return f'{value*100:.1f}%' if percent else f'{value:.3f}'
     names = {'target':'目标模型','current':'当前模型','initial':'初诊模型'}
+    names.update({k:Path(v).name for k,v in state.get('paths',{}).items()})
     status = {'success':'通过','warning':'需复核','failed':'未通过','completed':'完成'}
     lines = [f"扫描时间：{state.get('created','未记录')}",
              f"固定参考：{names.get(state.get('reference'),state.get('reference','未记录'))}",
