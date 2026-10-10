@@ -1,4 +1,4 @@
-"""Case storage and registration. All surfaces live in the initial scan frame."""
+"""Case storage and registration in a shared, explicitly chosen reference frame."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import uuid
 
 import numpy as np
@@ -33,7 +34,7 @@ class DisplaySettings:
     tooth: str = '未指定'
     reverse: bool = False
     color: bool = True
-    step: float = 0.1
+    step: float = 0.05
 
     @classmethod
     def from_dict(cls, values):
@@ -175,15 +176,14 @@ def suggest_region(initial, target):
 
 
 def normalize_paths(paths):
-    """Two-model mode fixes the target; three-model mode fixes the initial scan."""
-    paths = {k: str(v) for k, v in paths.items() if v and k in ('initial', 'target', 'current')}
-    if not all(k in paths for k in ('target', 'current')):
-        raise ValueError('至少需要目标模型和当前模型；初诊模型可留空')
+    paths = {k: str(v) for k, v in paths.items() if v}
+    if len(paths) < 2:
+        raise ValueError('请至少导入两个模型')
     return paths
 
 
 def load_preview(paths, progress=lambda f,m: None):
-    paths = {k:v for k,v in paths.items() if v and k in ('initial','target','current')}
+    paths = {k:v for k,v in paths.items() if v}
     if not paths:
         raise ValueError('请拖入至少一个模型')
     arrays = {}
@@ -196,12 +196,40 @@ def load_preview(paths, progress=lambda f,m: None):
     return arrays
 
 
-def run_case(paths, destination, progress=lambda f, m: None, cancel=lambda: False, previous=None):
-    """Global 3.0 auto route. Reuse only hash-matched target pose; current always -> initial."""
+def snapshot_paths(paths,destination):
+    """Keep each imported round independent of later overwrites by the scanner."""
+    destination = Path(destination).resolve()
+    destination.mkdir(parents=True,exist_ok=True)
+    result = {}
+    for key,path in paths.items():
+        source = Path(path).resolve()
+        if source.is_relative_to(destination):
+            result[key] = str(source)
+            continue
+        folder = destination/uuid.uuid4().hex
+        folder.mkdir()
+        target = folder/source.name
+        before = file_hash(source)
+        shutil.copyfile(source,target)
+        if before != file_hash(source) or before != file_hash(target):
+            raise ValueError(f'{source.name} 正在写入，请等待口扫导出完成后重新导入。')
+        result[key] = str(target)
+    return result
+
+
+def run_case(paths, destination, progress=lambda f, m: None, cancel=lambda: False, previous=None,
+             reference=None, comparison=None):
+    """Global 3.0 auto route; every model independently aligns to one reference."""
     if GENERAL_MODEL_REGISTRATION_VERSION != '3.0.0':
         raise RuntimeError('需要配准核心 3.0.0')
     paths = normalize_paths(paths)
-    reference = 'initial' if 'initial' in paths else 'target'
+    reference = reference or ('initial' if 'initial' in paths else next(iter(paths)))
+    if reference not in paths:
+        raise ValueError('参考模型不在导入列表中')
+    color_reference = 'target' if comparison is None and 'target' in paths else reference
+    comparison = comparison or ('current' if 'current' in paths else next(k for k in paths if k != reference))
+    if comparison not in paths or comparison == color_reference:
+        raise ValueError('请选择两个不同的模型进行比较')
     config = AlignmentConfig(refinement_mode='auto')
     meshes, facts, hashes = {}, {}, {}
     for key in paths:
@@ -214,22 +242,22 @@ def run_case(paths, destination, progress=lambda f, m: None, cancel=lambda: Fals
             raise ValueError('读取期间模型仍在写入，请等待导出完成后再试')
     aligned = {reference: meshes[reference]}
     registrations = {}
-    keys = [key for key in ('target','current') if key != reference]
+    keys = [key for key in paths if key != reference]
     for index, key in enumerate(keys):
-        cached = (key == 'target' and previous and
-                  previous.get('hashes', {}).get('initial') == hashes['initial'] and
-                  previous.get('hashes', {}).get('target') == hashes['target'] and
+        cached = (previous and previous.get('reference') == reference and
+                  previous.get('hashes', {}).get(reference) == hashes[reference] and
+                  previous.get('hashes', {}).get(key) == hashes[key] and
                   previous.get('core_version') == GENERAL_MODEL_REGISTRATION_VERSION and
-                  previous.get('registrations', {}).get('target', {}).get('status') in ('success', 'warning'))
+                  previous.get('registrations', {}).get(key, {}).get('status') in ('success', 'warning'))
         if hashes[key] == hashes[reference]:
             record = {'matrix': np.eye(4).tolist(), 'status': 'success', 'confidence': '相同模型',
                       'warnings': [], 'metrics': {}, 'seconds': 0., 'identical_input': True}
         elif cached:
-            record = copy.deepcopy(previous['registrations']['target'])
+            record = copy.deepcopy(previous['registrations'][key])
             record['cache_reused'] = True
         else:
             result = register_meshes(meshes[reference], meshes[key], facts[reference], facts[key], config,
-                lambda f, m, i=index, k=key: progress((i+f)/len(keys), f'{"目标" if k == "target" else "当前"} · {m}'), cancel=cancel)
+                lambda f, m, i=index, k=key: progress((i+f)/len(keys), f'{Path(paths[k]).name} · {m}'), cancel=cancel)
             record = {'matrix': result.transformation.tolist(), 'status': result.status,
                       'confidence': result.confidence, 'warnings': list(result.warnings),
                       'metrics': diagnostic_json(result.metrics.as_dict()), 'seconds': result.elapsed_seconds}
@@ -238,12 +266,14 @@ def run_case(paths, destination, progress=lambda f, m: None, cancel=lambda: Fals
     failed = any(x['status'] == 'failed' for x in registrations.values())
     check_cancelled(cancel)
     progress(.97, '计算偏差与变化区…')
-    values, valid = comparison_values(aligned['current'], aligned['target'])
+    values, valid = comparison_values(aligned[comparison], aligned[color_reference])
     if failed:
         valid[:] = False
-    region = None if failed else (suggest_region(aligned['initial'], aligned['target']) if 'initial' in aligned else None)
+    region = None if failed else (suggest_region(aligned['initial'], aligned['target']) if 'initial' in aligned and 'target' in aligned else None)
     state = {'schema': 1, 'core_version': GENERAL_MODEL_REGISTRATION_VERSION,
              'reference': reference,
+             'pair': [color_reference, comparison],
+             'geometry_pair': [color_reference, comparison],
              'created': datetime.now().astimezone().isoformat(), 'paths': {k: str(Path(v).resolve()) for k,v in paths.items()},
              'hashes': hashes, 'registrations': registrations, 'failed': failed,
              'region_suggestion': region, 'mesh_warnings': {k: list(v.warnings) for k,v in facts.items()}}
@@ -263,6 +293,22 @@ def run_case(paths, destination, progress=lambda f, m: None, cancel=lambda: Fals
     return state, arrays, folder/'case.json'
 
 
+def pair_arrays(arrays, reference, comparison, *, calculate=False, failed=False):
+    """Canonical aliases are local to the chosen pair; model IDs stay stable."""
+    pair = {role+'_'+field: arrays[key+'_'+field]
+            for role,key in [('target',reference),('current',comparison)]
+            for field in ('vertices','triangles')}
+    if calculate:
+        pair['values'], pair['valid'] = comparison_values(
+            unpack_mesh({'vertices':pair['current_vertices'],'triangles':pair['current_triangles']}),
+            unpack_mesh({'vertices':pair['target_vertices'],'triangles':pair['target_triangles']}))
+    else:
+        pair['values'], pair['valid'] = arrays['values'], arrays['valid']
+    if failed:
+        pair['valid'] = np.zeros(len(pair['values']), dtype=bool)
+    return pair
+
+
 def load_case(path):
     path = Path(path)
     state = json.loads(path.read_text(encoding='utf-8'))
@@ -270,4 +316,8 @@ def load_case(path):
         raise ValueError('不支持的病例版本')
     with np.load(path.with_name('geometry.npz'), allow_pickle=False) as archive:
         arrays = {k: archive[k].copy() for k in archive.files}
+    pair = state.get('pair', ['target','current'])
+    if pair != state.get('geometry_pair', ['target','current']):
+        data = pair_arrays(arrays,*pair,calculate=True,failed=state.get('failed',False))
+        arrays.update(values=data['values'],valid=data['valid'])
     return state, arrays, path

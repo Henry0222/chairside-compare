@@ -7,10 +7,7 @@ sys.path.insert(0, str(HERE.parent / 'general_model_registration' / 'src'))
 sys.path.insert(0, str(HERE / 'src'))
 
 if __name__ == '__main__':
-    if '--general-viewer' in sys.argv:
-        from chairside_compare.general_review import main
-        main(sys.argv[sys.argv.index('--general-viewer')+1])
-    elif '--package-check' in sys.argv:
+    if '--package-check' in sys.argv:
         from chairside_compare.package_check import main
         main(sys.argv[sys.argv.index('--package-check')+1])
     else:

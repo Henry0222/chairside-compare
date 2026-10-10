@@ -1,7 +1,7 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules, collect_dynamic_libs, collect_data_files
 root = Path(SPECPATH).parent
-hidden = collect_submodules('vtkmodules') + ['open3d.cpu.pybind','scipy.spatial.transform._rotation','chairside_compare.general_review']
+hidden = collect_submodules('vtkmodules') + ['open3d.cpu.pybind','scipy.spatial.transform._rotation']
 data = collect_data_files('open3d', includes=['resources/**'])
 a = Analysis([str(root/'run.py')], pathex=[str(root/'src'),str(root.parent/'general_model_registration'/'src')],
     binaries=collect_dynamic_libs('open3d'), datas=data,
